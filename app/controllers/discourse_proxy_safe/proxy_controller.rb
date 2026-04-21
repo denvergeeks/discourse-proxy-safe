@@ -42,7 +42,9 @@ class DiscourseProxySafe::ProxyController < ApplicationController
     body = response.body
     write_cache(body)
 
-    render json: body, status: response.code.to_i
+    render plain: body,
+           content_type: "application/json",
+           status: response.code.to_i
   end
 
   private
