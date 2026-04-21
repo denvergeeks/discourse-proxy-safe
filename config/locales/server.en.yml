@@ -1,1 +1,9 @@
 en:
+  site_settings:
+    proxy_safe_enabled: "Enable discourse-proxy-safe"
+    proxy_safe_access_level: "Proxy access level"
+    proxy_safe_allowed_domains: "Proxy allowed domains"
+    proxy_safe_rate_limit_per_minute: "Proxy rate limit (requests per minute)"
+    proxy_safe_cache_seconds: "Proxy cache duration (seconds)"
+    proxy_safe_max_response_size_kb: "Proxy max response size (KB)"
+    proxy_safe_request_timeout_seconds: "Proxy request timeout (seconds)"

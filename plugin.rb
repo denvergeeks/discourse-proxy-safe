@@ -1,21 +1,24 @@
 # frozen_string_literal: true
 
-# name: discourse-plugin-name
-# about: TODO
-# meta_topic_id: TODO
-# version: 0.0.1
-# authors: Discourse
-# url: TODO
-# required_version: 2.7.0
+# name: discourse-proxy-safe
+# about: A safe, allowlisted reverse proxy for fetching remote Discourse content server-side.
+# version: 0.1.0
+# authors: You
+# url: https://github.com/your-org/discourse-proxy-safe
 
-enabled_site_setting :plugin_name_enabled
-
-module ::MyPluginModule
-  PLUGIN_NAME = "discourse-plugin-name"
-end
-
-require_relative "lib/my_plugin_module/engine"
+enabled_site_setting :proxy_safe_enabled
 
 after_initialize do
-  # Code which should run after Rails has finished booting
+  module ::DiscourseProxySafe
+    PLUGIN_NAME = "discourse-proxy-safe"
+
+    autoload :ProxyController,
+             "#{Rails.root}/plugins/discourse-proxy-safe/app/controllers/discourse_proxy_safe/proxy_controller"
+  end
+
+  Discourse::Application.routes.append do
+    get "/discourse-proxy-safe" =>
+          "discourse_proxy_safe/proxy#fetch",
+          constraints: { format: :json }
+  end
 end

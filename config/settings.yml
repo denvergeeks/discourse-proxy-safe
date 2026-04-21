@@ -1,4 +1,67 @@
-TODO_plugin_name:
-  plugin_name_enabled:
-    default: false
+plugins:
+  proxy_safe_enabled:
+    default: true
     client: true
+    description: "Enable the discourse-proxy-safe endpoint."
+
+  proxy_safe_access_level:
+    default: "logged_in"
+    type: enum
+    choices:
+      - public
+      - logged_in
+      - session
+    client: false
+    description: >
+      Controls who can use the proxy endpoint.
+      'public' allows any visitor.
+      'logged_in' requires a Discourse login.
+      'session' requires a valid Discourse session cookie.
+
+  proxy_safe_allowed_domains:
+    default: "meta.discourse.org"
+    type: list
+    list_type: simple
+    client: true
+    description: >
+      Allowlisted domains the proxy is permitted to fetch from.
+      One domain per line. Subdomains are not automatically included.
+
+  proxy_safe_rate_limit_per_minute:
+    default: 30
+    min: 1
+    max: 300
+    type: integer
+    client: false
+    description: >
+      Maximum number of proxy requests a single user (or IP for public access)
+      may make per minute. Requests over this limit receive a 429 response.
+
+  proxy_safe_cache_seconds:
+    default: 300
+    min: 0
+    max: 3600
+    type: integer
+    client: false
+    description: >
+      How long (in seconds) to cache proxy responses on the server.
+      Set to 0 to disable caching. Maximum 3600 (1 hour).
+
+  proxy_safe_max_response_size_kb:
+    default: 512
+    min: 64
+    max: 2048
+    type: integer
+    client: false
+    description: >
+      Maximum allowed response size in kilobytes from the remote server.
+      Responses larger than this are rejected with a 502 error.
+
+  proxy_safe_request_timeout_seconds:
+    default: 8
+    min: 1
+    max: 30
+    type: integer
+    client: false
+    description: >
+      Timeout in seconds for outbound proxy requests to remote servers.
