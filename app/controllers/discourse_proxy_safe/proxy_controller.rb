@@ -14,37 +14,51 @@ class DiscourseProxySafe::ProxyController < ApplicationController
   ].freeze
 
   def fetch
-    cached = read_cache
-    if cached
-      render json: cached, status: 200
-      return
+    begin
+      cached = read_cache
+      if cached
+        render plain: cached,
+               content_type: "application/json",
+               status: 200
+        return
+      end
+
+      response = fetch_remote
+      unless response
+        render json: { error: "Remote fetch failed or timed out." },
+               status: 502
+        return
+      end
+
+      unless acceptable_content_type?(response)
+        render json: { error: "Remote returned an unsupported content type." },
+               status: 502
+        return
+      end
+
+      unless acceptable_size?(response)
+        render json: { error: "Remote response exceeded the maximum allowed size." },
+               status: 502
+        return
+      end
+
+      body = response.body.to_s
+      status = response.status.to_i
+      status = 200 if status < 100 || status > 599
+
+      write_cache(body) if status == 200
+
+      render plain: body,
+             content_type: "application/json",
+             status: status
+
+    rescue => e
+      Rails.logger.error(
+        "[discourse-proxy-safe] Unhandled error in fetch: #{e.class}: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}"
+      )
+      render json: { error: "An unexpected error occurred." },
+             status: 500
     end
-
-    response = fetch_remote
-    unless response
-      render json: { error: "Remote fetch failed or timed out." }, status: 502
-      return
-    end
-
-    unless acceptable_content_type?(response)
-      render json: { error: "Remote returned an unsupported content type." }, status: 502
-      return
-    end
-
-    unless acceptable_size?(response)
-      render json: {
-               error: "Remote response exceeded the maximum allowed size.",
-             },
-             status: 502
-      return
-    end
-
-    body = response.body
-    write_cache(body)
-
-    render plain: body,
-           content_type: "application/json",
-           status: response.code.to_i
   end
 
   private
@@ -66,7 +80,7 @@ class DiscourseProxySafe::ProxyController < ApplicationController
       end
     when "session"
       unless current_user && request.session[:current_user_id].present?
-        render json: { error: "A valid session is required to use this proxy." },
+        render json: { error: "A valid session is required." },
                status: 403
       end
     when "public"
@@ -85,9 +99,7 @@ class DiscourseProxySafe::ProxyController < ApplicationController
     Discourse.redis.expire(key, 60) if count == 1
 
     if count > limit
-      render json: {
-               error: "Rate limit exceeded. Please wait before retrying.",
-             },
+      render json: { error: "Rate limit exceeded. Please wait before retrying." },
              status: 429
     end
   end
@@ -117,7 +129,7 @@ class DiscourseProxySafe::ProxyController < ApplicationController
       return
     end
 
-    unless %w[http https].include?(uri.scheme)
+    unless %w[http https].include?(uri.scheme.to_s)
       render json: { error: "Only http and https URLs are permitted." },
              status: 400
       return
@@ -129,14 +141,14 @@ class DiscourseProxySafe::ProxyController < ApplicationController
     end
 
     allowed = SiteSetting.proxy_safe_allowed_domains
+                .to_s
                 .split("|")
                 .map(&:strip)
                 .reject(&:blank?)
 
     unless allowed.include?(uri.host.downcase)
       render json: {
-               error:
-                 "Domain '#{uri.host}' is not in the proxy allowlist.",
+               error: "Domain '#{uri.host}' is not in the proxy allowlist.",
              },
              status: 403
       return
@@ -148,20 +160,29 @@ class DiscourseProxySafe::ProxyController < ApplicationController
   def fetch_remote
     timeout = SiteSetting.proxy_safe_request_timeout_seconds.to_i
 
-    uri = @proxy_uri.to_s
-
-    connection =
-      Faraday.new do |f|
-        f.options.timeout = timeout
-        f.options.open_timeout = [timeout, 5].min
-        f.adapter Faraday.default_adapter
-      end
-
-    connection.get(uri) do |req|
-      req.headers["Accept"] = "application/json, text/plain, */*"
-      req.headers["User-Agent"] = "discourse-proxy-safe/0.1 (+#{Discourse.base_url})"
+    connection = Faraday.new do |f|
+      f.options.timeout = timeout
+      f.options.open_timeout = [timeout, 5].min
+      f.adapter Faraday.default_adapter
     end
-  rescue Faraday::TimeoutError, Faraday::ConnectionFailed
+
+    connection.get(@proxy_uri.to_s) do |req|
+      req.headers["Accept"] = "application/json, text/plain, */*"
+      req.headers["User-Agent"] =
+        "discourse-proxy-safe/0.1 (+#{Discourse.base_url})"
+    end
+  rescue Faraday::TimeoutError,
+         Faraday::ConnectionFailed,
+         Faraday::SSLError,
+         Faraday::Error => e
+    Rails.logger.warn(
+      "[discourse-proxy-safe] Fetch failed for #{@proxy_uri}: #{e.class}: #{e.message}"
+    )
+    nil
+  rescue => e
+    Rails.logger.error(
+      "[discourse-proxy-safe] Unexpected fetch error for #{@proxy_uri}: #{e.class}: #{e.message}"
+    )
     nil
   end
 
@@ -172,7 +193,7 @@ class DiscourseProxySafe::ProxyController < ApplicationController
 
   def acceptable_size?(response)
     max_bytes = SiteSetting.proxy_safe_max_response_size_kb.to_i * 1024
-    response.body.bytesize <= max_bytes
+    response.body.to_s.bytesize <= max_bytes
   end
 
   def cache_key
