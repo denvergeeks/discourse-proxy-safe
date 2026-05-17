@@ -11,6 +11,7 @@ class DiscourseProxySafe::ProxyController < ApplicationController
   ALLOWED_CONTENT_TYPES = %w[
     application/json
     text/plain
+    text/html
   ].freeze
 
   def fetch
@@ -49,9 +50,8 @@ class DiscourseProxySafe::ProxyController < ApplicationController
       write_cache(body) if status == 200
 
       render plain: body,
-             content_type: "application/json",
+             content_type: response.headers["content-type"].presence || "text/plain",
              status: status
-
     rescue => e
       Rails.logger.error(
         "[discourse-proxy-safe] Unhandled error in fetch: #{e.class}: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}"
@@ -145,6 +145,7 @@ class DiscourseProxySafe::ProxyController < ApplicationController
                 .split("|")
                 .map(&:strip)
                 .reject(&:blank?)
+                .map(&:downcase)
 
     unless allowed.include?(uri.host.downcase)
       render json: {
@@ -167,7 +168,7 @@ class DiscourseProxySafe::ProxyController < ApplicationController
     end
 
     connection.get(@proxy_uri.to_s) do |req|
-      req.headers["Accept"] = "application/json, text/plain, */*"
+      req.headers["Accept"] = "text/html, application/json, text/plain, */*"
       req.headers["User-Agent"] =
         "discourse-proxy-safe/0.1 (+#{Discourse.base_url})"
     end
