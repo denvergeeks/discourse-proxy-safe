@@ -8,6 +8,7 @@ class DiscourseProxySafe::ProxyController < ApplicationController
   before_action :validate_url
 
   CACHE_KEY_PREFIX = "discourse_proxy_safe"
+
   ALLOWED_CONTENT_TYPES = %w[
     application/json
     text/plain
@@ -18,28 +19,25 @@ class DiscourseProxySafe::ProxyController < ApplicationController
     begin
       cached = read_cache
       if cached
-        render plain: cached,
-               content_type: "application/json",
+        render plain: cached[:body],
+               content_type: cached[:content_type],
                status: 200
         return
       end
 
       response = fetch_remote
       unless response
-        render json: { error: "Remote fetch failed or timed out." },
-               status: 502
+        render json: { error: "Remote fetch failed or timed out." }, status: 502
         return
       end
 
       unless acceptable_content_type?(response)
-        render json: { error: "Remote returned an unsupported content type." },
-               status: 502
+        render json: { error: "Remote returned an unsupported content type." }, status: 502
         return
       end
 
       unless acceptable_size?(response)
-        render json: { error: "Remote response exceeded the maximum allowed size." },
-               status: 502
+        render json: { error: "Remote response exceeded the maximum allowed size." }, status: 502
         return
       end
 
@@ -47,17 +45,18 @@ class DiscourseProxySafe::ProxyController < ApplicationController
       status = response.status.to_i
       status = 200 if status < 100 || status > 599
 
-      write_cache(body) if status == 200
+      content_type = normalized_response_content_type(response)
+
+      write_cache(body, content_type) if status == 200
 
       render plain: body,
-             content_type: response.headers["content-type"].presence || "text/plain",
+             content_type: content_type,
              status: status
     rescue => e
       Rails.logger.error(
         "[discourse-proxy-safe] Unhandled error in fetch: #{e.class}: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}"
       )
-      render json: { error: "An unexpected error occurred." },
-             status: 500
+      render json: { error: "An unexpected error occurred." }, status: 500
     end
   end
 
@@ -75,13 +74,11 @@ class DiscourseProxySafe::ProxyController < ApplicationController
     case level
     when "logged_in"
       unless current_user
-        render json: { error: "You must be logged in to use this proxy." },
-               status: 403
+        render json: { error: "You must be logged in to use this proxy." }, status: 403
       end
     when "session"
       unless current_user && request.session[:current_user_id].present?
-        render json: { error: "A valid session is required." },
-               status: 403
+        render json: { error: "A valid session is required." }, status: 403
       end
     when "public"
       # no restriction
@@ -99,8 +96,7 @@ class DiscourseProxySafe::ProxyController < ApplicationController
     Discourse.redis.expire(key, 60) if count == 1
 
     if count > limit
-      render json: { error: "Rate limit exceeded. Please wait before retrying." },
-             status: 429
+      render json: { error: "Rate limit exceeded. Please wait before retrying." }, status: 429
     end
   end
 
@@ -111,6 +107,7 @@ class DiscourseProxySafe::ProxyController < ApplicationController
       else
         "ip:#{request.remote_ip}"
       end
+
     "#{CACHE_KEY_PREFIX}:rate:#{identifier}"
   end
 
@@ -130,8 +127,7 @@ class DiscourseProxySafe::ProxyController < ApplicationController
     end
 
     unless %w[http https].include?(uri.scheme.to_s)
-      render json: { error: "Only http and https URLs are permitted." },
-             status: 400
+      render json: { error: "Only http and https URLs are permitted." }, status: 400
       return
     end
 
@@ -141,17 +137,16 @@ class DiscourseProxySafe::ProxyController < ApplicationController
     end
 
     allowed = SiteSetting.proxy_safe_allowed_domains
-                .to_s
-                .split("|")
-                .map(&:strip)
-                .reject(&:blank?)
-                .map(&:downcase)
+      .to_s
+      .split("|")
+      .map(&:strip)
+      .reject(&:blank?)
+      .map(&:downcase)
 
     unless allowed.include?(uri.host.downcase)
       render json: {
-               error: "Domain '#{uri.host}' is not in the proxy allowlist.",
-             },
-             status: 403
+        error: "Domain '#{uri.host}' is not in the proxy allowlist.",
+      }, status: 403
       return
     end
 
@@ -169,13 +164,9 @@ class DiscourseProxySafe::ProxyController < ApplicationController
 
     connection.get(@proxy_uri.to_s) do |req|
       req.headers["Accept"] = "text/html, application/json, text/plain, */*"
-      req.headers["User-Agent"] =
-        "discourse-proxy-safe/0.1 (+#{Discourse.base_url})"
+      req.headers["User-Agent"] = "discourse-proxy-safe/0.1 (+#{Discourse.base_url})"
     end
-  rescue Faraday::TimeoutError,
-         Faraday::ConnectionFailed,
-         Faraday::SSLError,
-         Faraday::Error => e
+  rescue Faraday::TimeoutError, Faraday::ConnectionFailed, Faraday::SSLError, Faraday::Error => e
     Rails.logger.warn(
       "[discourse-proxy-safe] Fetch failed for #{@proxy_uri}: #{e.class}: #{e.message}"
     )
@@ -204,12 +195,37 @@ class DiscourseProxySafe::ProxyController < ApplicationController
   def read_cache
     ttl = SiteSetting.proxy_safe_cache_seconds.to_i
     return nil if ttl <= 0
-    Discourse.redis.get(cache_key)
+
+    raw = Discourse.redis.get(cache_key)
+    return nil if raw.blank?
+
+    begin
+      parsed = JSON.parse(raw)
+      {
+        body: parsed["body"].to_s,
+        content_type: parsed["content_type"].presence || "text/plain"
+      }
+    rescue JSON::ParserError
+      {
+        body: raw,
+        content_type: "text/plain"
+      }
+    end
   end
 
-  def write_cache(body)
+  def write_cache(body, content_type)
     ttl = SiteSetting.proxy_safe_cache_seconds.to_i
     return if ttl <= 0
-    Discourse.redis.setex(cache_key, ttl, body)
+
+    payload = {
+      body: body,
+      content_type: content_type.presence || "text/plain"
+    }
+
+    Discourse.redis.setex(cache_key, ttl, payload.to_json)
+  end
+
+  def normalized_response_content_type(response)
+    response.headers["content-type"].presence || "text/plain"
   end
 end
