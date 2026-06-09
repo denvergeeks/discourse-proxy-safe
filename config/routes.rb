@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
-MyPluginModule::Engine.routes.draw do
-  get "/examples" => "examples#index"
-  # define routes here
+DiscourseProxySafe::Engine.routes.draw do
+  get "/fetch" => "proxy#fetch"
 end
 
-Discourse::Application.routes.draw { mount ::MyPluginModule::Engine, at: "my-plugin" }
+Discourse::Application.routes.draw do
+  mount ::DiscourseProxySafe::Engine, at: "/discourse-proxy-safe"
+end

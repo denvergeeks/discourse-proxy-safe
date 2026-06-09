@@ -2,7 +2,7 @@ plugins:
   proxy_safe_enabled:
     default: true
     client: true
-    description: "Enable the discourse-proxy-safe endpoint."
+    description: "Enable the discourse-proxy-safe proxy endpoint."
 
   proxy_safe_access_level:
     default: "logged_in"
@@ -24,18 +24,38 @@ plugins:
     list_type: simple
     client: true
     description: >
-      Allowlisted domains the proxy is permitted to fetch from.
-      One domain per line. Subdomains are not automatically included.
+      Allowlisted remote hosts the proxy is permitted to fetch from.
+      Add one host per line.
+
+  proxy_safe_subdomain_policy:
+    default: "always_include_subdomains"
+    type: enum
+    choices:
+      - exact_only
+      - always_include_subdomains
+    client: false
+    description: >
+      Controls how proxy_safe_allowed_domains entries are matched.
+      'exact_only' allows only the listed hosts.
+      'always_include_subdomains' also allows any subdomain of a listed host.
+
+  proxy_safe_block_private_networks:
+    default: true
+    client: false
+    description: >
+      Block requests to localhost, loopback, link-local, and private-network
+      addresses to reduce SSRF risk.
 
   proxy_safe_rate_limit_per_minute:
-    default: 30
+    default: 20
     min: 1
     max: 300
     type: integer
     client: false
     description: >
-      Maximum number of proxy requests a single user (or IP for public access)
-      may make per minute. Requests over this limit receive a 429 response.
+      Maximum number of proxy requests a single user
+      (or IP address for public access) may make per minute.
+      Requests over this limit receive a 429 response.
 
   proxy_safe_cache_seconds:
     default: 300
@@ -44,18 +64,19 @@ plugins:
     type: integer
     client: false
     description: >
-      How long (in seconds) to cache proxy responses on the server.
-      Set to 0 to disable caching. Maximum 3600 (1 hour).
+      How long, in seconds, to cache successful proxy responses on the server.
+      Set to 0 to disable caching.
+      Maximum 3600 seconds (1 hour).
 
   proxy_safe_max_response_size_kb:
-    default: 512
+    default: 256
     min: 64
     max: 2048
     type: integer
     client: false
     description: >
       Maximum allowed response size in kilobytes from the remote server.
-      Responses larger than this are rejected with a 502 error.
+      Responses larger than this are rejected.
 
   proxy_safe_request_timeout_seconds:
     default: 8
@@ -65,3 +86,10 @@ plugins:
     client: false
     description: >
       Timeout in seconds for outbound proxy requests to remote servers.
+
+  proxy_safe_only_json:
+    default: true
+    client: false
+    description: >
+      Restrict the proxy to JSON responses only.
+      Recommended for remote Discourse topic preview fetching.
