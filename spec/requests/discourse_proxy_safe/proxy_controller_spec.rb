@@ -3,13 +3,14 @@
 require "rails_helper"
 
 RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
-  fab!(:user) { Fabricate(:user) }
+  fab!(:current_user) { Fabricate(:user) }
 
   let(:json_url) { "https://remote.example.com/t/123.json" }
   let(:html_url) { "https://blog.example.com/" }
   let(:json_headers) { { "content-type" => "application/json; charset=utf-8" } }
   let(:html_headers) { { "content-type" => "text/html; charset=utf-8" } }
   let(:text_headers) { { "content-type" => "text/plain; charset=utf-8" } }
+  let(:xml_headers) { { "content-type" => "application/xml; charset=utf-8" } }
   let(:json_body) { '{"id":123,"title":"Remote topic"}' }
   let(:html_body) do
     <<~HTML
@@ -40,35 +41,25 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
     SiteSetting.proxy_safe_allowed_domains = "remote.example.com|blog.example.com|example.com"
   end
 
-  def stub_faraday_connection(expected_url:, response:)
+  def build_faraday_connection_stub(expected_url:, response: nil, error: nil, &request_assertions)
     connection = instance_double(Faraday::Connection)
 
     allow(Faraday).to receive(:new).and_return(connection)
 
-    allow(connection).to receive(:get).with(expected_url).and_yield(double("request", headers: {})).and_return(response)
-  end
+    allow(connection).to receive(:get).with(expected_url) do |&block|
+      request = Struct.new(:headers).new({})
+      block.call(request) if block
+      request_assertions&.call(request)
 
-  def stub_faraday_error(expected_url:, status:, headers: {}, body: "")
-    connection = instance_double(Faraday::Connection)
+      raise error if error
 
-    allow(Faraday).to receive(:new).and_return(connection)
-
-    exception =
-      Faraday::ClientError.new(
-        "upstream error",
-        response: {
-          status: status,
-          headers: headers,
-          body: body,
-        }
-      )
-
-    allow(connection).to receive(:get).with(expected_url).and_yield(double("request", headers: {})).and_raise(exception)
+      response
+    end
   end
 
   describe "GET /discourse-proxy-safe/fetch.json" do
     it "returns proxied JSON for an allowed remote topic URL" do
-      stub_faraday_connection(
+      build_faraday_connection_stub(
         expected_url: json_url,
         response: OpenStruct.new(status: 200, headers: json_headers, body: json_body)
       )
@@ -81,7 +72,7 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
     end
 
     it "rejects upstream HTML on the JSON-only route" do
-      stub_faraday_connection(
+      build_faraday_connection_stub(
         expected_url: html_url,
         response: OpenStruct.new(status: 200, headers: html_headers, body: html_body)
       )
@@ -93,12 +84,17 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
     end
 
     it "passes through known upstream 404 JSON responses" do
-      stub_faraday_error(
-        expected_url: json_url,
-        status: 404,
-        headers: json_headers,
-        body: '{"error":"Not Found"}'
-      )
+      error =
+        Faraday::ClientError.new(
+          "upstream error",
+          response: {
+            status: 404,
+            headers: json_headers,
+            body: '{"error":"Not Found"}',
+          }
+        )
+
+      build_faraday_connection_stub(expected_url: json_url, error: error)
 
       get "/discourse-proxy-safe/fetch.json", params: { url: json_url }
 
@@ -148,9 +144,9 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
 
     it "allows a logged-in user when access level is logged_in" do
       SiteSetting.proxy_safe_access_level = "logged_in"
-      sign_in(user)
+      sign_in(current_user)
 
-      stub_faraday_connection(
+      build_faraday_connection_stub(
         expected_url: json_url,
         response: OpenStruct.new(status: 200, headers: json_headers, body: json_body)
       )
@@ -164,7 +160,7 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
     it "enforces rate limiting" do
       SiteSetting.proxy_safe_rate_limit_per_minute = 1
 
-      stub_faraday_connection(
+      build_faraday_connection_stub(
         expected_url: json_url,
         response: OpenStruct.new(status: 200, headers: json_headers, body: json_body)
       )
@@ -183,7 +179,7 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
 
       oversized_body = "x" * 2048
 
-      stub_faraday_connection(
+      build_faraday_connection_stub(
         expected_url: json_url,
         response: OpenStruct.new(status: 200, headers: json_headers, body: oversized_body)
       )
@@ -193,11 +189,27 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
       expect(response.status).to eq(502)
       expect(response.parsed_body["error"]).to eq("Remote response exceeded the maximum allowed size.")
     end
+
+    it "sends a JSON-only Accept header upstream" do
+      build_faraday_connection_stub(
+        expected_url: json_url,
+        response: OpenStruct.new(status: 200, headers: json_headers, body: json_body)
+      ) do |request|
+        expect(request.headers["Accept"]).to eq(
+          "application/json, application/problem+json, */*"
+        )
+        expect(request.headers["User-Agent"]).to include("discourse-proxy-safe/")
+      end
+
+      get "/discourse-proxy-safe/fetch.json", params: { url: json_url }
+
+      expect(response.status).to eq(200)
+    end
   end
 
   describe "GET /discourse-proxy-safe/fetch_external.json" do
     it "returns proxied HTML for an allowed external URL" do
-      stub_faraday_connection(
+      build_faraday_connection_stub(
         expected_url: html_url,
         response: OpenStruct.new(status: 200, headers: html_headers, body: html_body)
       )
@@ -210,7 +222,7 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
     end
 
     it "returns proxied plain text for an allowed external URL" do
-      stub_faraday_connection(
+      build_faraday_connection_stub(
         expected_url: html_url,
         response: OpenStruct.new(status: 200, headers: text_headers, body: text_body)
       )
@@ -223,7 +235,7 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
     end
 
     it "also accepts JSON on the external route" do
-      stub_faraday_connection(
+      build_faraday_connection_stub(
         expected_url: json_url,
         response: OpenStruct.new(status: 200, headers: json_headers, body: json_body)
       )
@@ -236,12 +248,17 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
     end
 
     it "passes through known upstream 404 HTML responses" do
-      stub_faraday_error(
-        expected_url: html_url,
-        status: 404,
-        headers: html_headers,
-        body: "<html><body>Not found</body></html>"
-      )
+      error =
+        Faraday::ClientError.new(
+          "upstream error",
+          response: {
+            status: 404,
+            headers: html_headers,
+            body: "<html><body>Not found</body></html>",
+          }
+        )
+
+      build_faraday_connection_stub(expected_url: html_url, error: error)
 
       get "/discourse-proxy-safe/fetch_external.json", params: { url: html_url }
 
@@ -258,9 +275,7 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
     end
 
     it "returns 502 for unsupported upstream content types" do
-      xml_headers = { "content-type" => "application/xml; charset=utf-8" }
-
-      stub_faraday_connection(
+      build_faraday_connection_stub(
         expected_url: html_url,
         response: OpenStruct.new(status: 200, headers: xml_headers, body: "<feed />")
       )
@@ -269,6 +284,22 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
 
       expect(response.status).to eq(502)
       expect(response.parsed_body["error"]).to eq("Remote returned an unsupported content type.")
+    end
+
+    it "sends the broader external Accept header upstream" do
+      build_faraday_connection_stub(
+        expected_url: html_url,
+        response: OpenStruct.new(status: 200, headers: html_headers, body: html_body)
+      ) do |request|
+        expect(request.headers["Accept"]).to eq(
+          "application/json, application/problem+json, text/plain, text/html, */*"
+        )
+        expect(request.headers["User-Agent"]).to include("discourse-proxy-safe/")
+      end
+
+      get "/discourse-proxy-safe/fetch_external.json", params: { url: html_url }
+
+      expect(response.status).to eq(200)
     end
   end
 
@@ -285,13 +316,17 @@ RSpec.describe "DiscourseProxySafe::ProxyController", type: :request do
 
       allow(Faraday).to receive(:new).and_return(first_connection, second_connection)
 
-      allow(first_connection).to receive(:get).with(shared_url).and_yield(double("request", headers: {})).and_return(
+      allow(first_connection).to receive(:get).with(shared_url) do |&block|
+        request = Struct.new(:headers).new({})
+        block.call(request) if block
         OpenStruct.new(status: 200, headers: json_headers, body: '{"route":"json"}')
-      )
+      end
 
-      allow(second_connection).to receive(:get).with(shared_url).and_yield(double("request", headers: {})).and_return(
+      allow(second_connection).to receive(:get).with(shared_url) do |&block|
+        request = Struct.new(:headers).new({})
+        block.call(request) if block
         OpenStruct.new(status: 200, headers: html_headers, body: "<html><body>external route</body></html>")
-      )
+      end
 
       get "/discourse-proxy-safe/fetch.json", params: { url: shared_url }
       expect(response.status).to eq(200)
