@@ -37,7 +37,10 @@ module ::DiscourseProxySafe
     ].freeze
 
     def fetch
-      proxy_fetch(allowed_content_types: JSON_CONTENT_TYPES, default_content_type: "application/json")
+      proxy_fetch(
+        allowed_content_types: JSON_CONTENT_TYPES,
+        default_content_type: "application/json"
+      )
     end
 
     def fetch_external
