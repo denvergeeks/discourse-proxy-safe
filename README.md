@@ -99,68 +99,71 @@ A host should be allowed by both:
 
 ## Testing
 
-This plugin has request specs covering the split proxy contract:
+This repository uses Discourse’s shared reusable GitHub Actions workflow for primary plugin CI:
 
-- `GET /discourse-proxy-safe/fetch.json` for strict JSON-only remote topic proxying.
-- `GET /discourse-proxy-safe/fetch_external.json` for broader external webpage proxying (`text/html`, `text/plain`, and JSON).
+- `.github/workflows/discourse-plugin.yml`
+- `uses: discourse/.github/.github/workflows/discourse-plugin.yml@v1`
 
-### What the specs cover
+That workflow should remain the main CI entry point for full plugin validation.
 
-The request specs verify:
+### Proxy request specs
 
+This plugin also includes focused request specs for the split proxy design:
+
+- `GET /discourse-proxy-safe/fetch.json` for strict JSON-only remote-topic proxying
+- `GET /discourse-proxy-safe/fetch_external.json` for broader external webpage proxying
+
+Recommended spec files:
+
+- `spec/requests/discourse_proxy_safe/proxy_controller_spec.rb`
+- `spec/requests/discourse_proxy_safe/proxy_accept_headers_spec.rb`
+
+These specs cover:
+
+- route behavior
 - allowlist enforcement
 - access-level enforcement
 - rate limiting
 - maximum response size handling
-- cache separation between the two routes
-- upstream status passthrough for supported statuses
-- strict content-type rejection on the JSON route
-- broader content-type acceptance on the external route
+- content-type validation
+- cache separation between fetch modes
 - outbound `Accept` header behavior for each route
 
-### Spec files
+### Running the focused proxy specs locally
 
-Expected spec files:
-
-- `spec/requests/discourse_proxy_safe/proxy_controller_spec.rb`
-- `spec/requests/discourse_proxy_safe/proxy_accept_headers_spec.rb` (optional, if kept as a separate focused spec)
-
-### Run just this plugin's request specs
-
-From the main Discourse app root:
+From a Discourse-aware plugin test environment, run:
 
 ```bash
-bundle exec rspec plugins/discourse-proxy-safe/spec/requests/discourse_proxy_safe/proxy_controller_spec.rb
+bundle exec rspec spec/requests/discourse_proxy_safe/proxy_controller_spec.rb
 ```
 
-Run the companion outbound-header spec:
+Run the companion header-focused spec:
 
 ```bash
-bundle exec rspec plugins/discourse-proxy-safe/spec/requests/discourse_proxy_safe/proxy_accept_headers_spec.rb
+bundle exec rspec spec/requests/discourse_proxy_safe/proxy_accept_headers_spec.rb
 ```
 
 Run both together:
 
 ```bash
 bundle exec rspec \
-  plugins/discourse-proxy-safe/spec/requests/discourse_proxy_safe/proxy_controller_spec.rb \
-  plugins/discourse-proxy-safe/spec/requests/discourse_proxy_safe/proxy_accept_headers_spec.rb
+  spec/requests/discourse_proxy_safe/proxy_controller_spec.rb \
+  spec/requests/discourse_proxy_safe/proxy_accept_headers_spec.rb
 ```
 
-### Recommended local workflow
+### CI strategy
 
-1. Run the proxy request specs after any change to:
-   - `config/routes.rb`
-   - `app/controllers/discourse_proxy_safe/proxy_controller.rb`
-   - caching logic
-   - allowlist or access-level behavior
-   - content-type validation
-2. Re-run after any route rename in the plugin or provider endpoint change in the theme component.
-3. Treat failures in the outbound `Accept` header assertions as compatibility regressions, because they directly affect whether remote-topic previews stay JSON-strict while external previews remain HTML-capable.
+Keep the shared Discourse plugin workflow for full plugin CI.
 
-### Notes
+Because the shared reusable workflow does not currently expose an input for narrowing the rspec target, any faster proxy-only CI should be implemented as a separate supplemental workflow rather than by replacing or overloading the shared workflow.
 
-- The JSON route should reject upstream HTML responses with `502`.
-- The external route should accept upstream `text/html`, `text/plain`, and JSON responses.
-- Cache keys should remain route-specific so the same upstream URL cannot poison the cache across fetch modes.
-- If authentication helpers differ in a custom test setup, only the sign-in lines may need local adjustment; the request-spec structure should remain the same.
+### Maintenance note
+
+If the proxy route names, provider endpoints, controller behavior, or content-type rules change, re-run these focused request specs immediately.
+
+The split-route contract is intentional:
+
+- `/fetch.json` must remain JSON-strict
+- `/fetch_external.json` must remain broader for external webpage previews
+
+A regression in content-type validation, cache separation, or outbound `Accept` headers can silently break previews.
