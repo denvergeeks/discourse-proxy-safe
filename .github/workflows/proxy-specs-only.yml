@@ -23,6 +23,42 @@ jobs:
   proxy-specs:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: discourse_test
+          POSTGRES_USER: discourse
+          POSTGRES_PASSWORD: discourse
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U discourse -d discourse_test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      RAILS_ENV: test
+      DISCOURSE_DB_HOST: 127.0.0.1
+      DISCOURSE_DB_PORT: 5432
+      DISCOURSE_DB_NAME: discourse_test
+      DISCOURSE_DB_USERNAME: discourse
+      DISCOURSE_DB_PASSWORD: discourse
+      DISCOURSE_REDIS_HOST: 127.0.0.1
+      DISCOURSE_REDIS_PORT: 6379
+      LOAD_PLUGINS: 1
+
     steps:
       - name: Checkout plugin
         uses: actions/checkout@v4
@@ -30,32 +66,65 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          bundler-cache: true
+          bundler-cache: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpq-dev postgresql-client redis-tools
 
       - name: Clone Discourse
-        run: git clone --depth 1 https://github.com/discourse/discourse.git /tmp/discourse
+        run: |
+          git clone --depth 1 https://github.com/discourse/discourse.git /tmp/discourse
 
       - name: Link plugin into Discourse plugins directory
         run: |
           mkdir -p /tmp/discourse/plugins
           ln -s "$GITHUB_WORKSPACE" /tmp/discourse/plugins/discourse-proxy-safe
 
-      - name: Install Discourse bundle
+      - name: Cache Discourse bundle
+        uses: actions/cache@v4
+        with:
+          path: /tmp/discourse/vendor/bundle
+          key: ${{ runner.os }}-proxy-specs-bundle-${{ hashFiles('/tmp/discourse/Gemfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-proxy-specs-bundle-
+
+      - name: Install Ruby gems
         working-directory: /tmp/discourse
-        run: bundle install
+        run: |
+          bundle config set path vendor/bundle
+          bundle install --jobs 4 --retry 3
+
+      - name: Install JavaScript packages
+        working-directory: /tmp/discourse
+        run: |
+          yarn install --frozen-lockfile
+
+      - name: Wait for Postgres
+        run: |
+          until pg_isready -h 127.0.0.1 -p 5432 -U discourse -d discourse_test; do
+            sleep 2
+          done
+
+      - name: Wait for Redis
+        run: |
+          until redis-cli -h 127.0.0.1 -p 6379 ping | grep PONG; do
+            sleep 2
+          done
 
       - name: Prepare test database
         working-directory: /tmp/discourse
-        env:
-          RAILS_ENV: test
         run: |
           bundle exec rake db:create db:migrate
 
       - name: Run proxy request specs
         working-directory: /tmp/discourse
-        env:
-          RAILS_ENV: test
-          LOAD_PLUGINS: 1
         run: |
           bundle exec rspec \
             plugins/discourse-proxy-safe/spec/requests/discourse_proxy_safe/proxy_controller_spec.rb \
