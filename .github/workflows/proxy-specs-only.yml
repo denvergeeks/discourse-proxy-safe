@@ -1,0 +1,62 @@
+name: Proxy specs only
+
+on:
+  pull_request:
+    paths:
+      - "app/controllers/discourse_proxy_safe/proxy_controller.rb"
+      - "config/routes.rb"
+      - "spec/requests/discourse_proxy_safe/proxy_controller_spec.rb"
+      - "spec/requests/discourse_proxy_safe/proxy_accept_headers_spec.rb"
+      - ".github/workflows/proxy-specs-only.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "app/controllers/discourse_proxy_safe/proxy_controller.rb"
+      - "config/routes.rb"
+      - "spec/requests/discourse_proxy_safe/proxy_controller_spec.rb"
+      - "spec/requests/discourse_proxy_safe/proxy_accept_headers_spec.rb"
+      - ".github/workflows/proxy-specs-only.yml"
+  workflow_dispatch:
+
+jobs:
+  proxy-specs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          bundler-cache: true
+
+      - name: Clone Discourse
+        run: git clone --depth 1 https://github.com/discourse/discourse.git /tmp/discourse
+
+      - name: Link plugin into Discourse plugins directory
+        run: |
+          mkdir -p /tmp/discourse/plugins
+          ln -s "$GITHUB_WORKSPACE" /tmp/discourse/plugins/discourse-proxy-safe
+
+      - name: Install Discourse bundle
+        working-directory: /tmp/discourse
+        run: bundle install
+
+      - name: Prepare test database
+        working-directory: /tmp/discourse
+        env:
+          RAILS_ENV: test
+        run: |
+          bundle exec rake db:create db:migrate
+
+      - name: Run proxy request specs
+        working-directory: /tmp/discourse
+        env:
+          RAILS_ENV: test
+          LOAD_PLUGINS: 1
+        run: |
+          bundle exec rspec \
+            plugins/discourse-proxy-safe/spec/requests/discourse_proxy_safe/proxy_controller_spec.rb \
+            plugins/discourse-proxy-safe/spec/requests/discourse_proxy_safe/proxy_accept_headers_spec.rb
