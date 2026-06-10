@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 DiscourseProxySafe::Engine.routes.draw do
-  get "/fetch" => "proxy#fetch"
+  get "/fetch" => "proxy#fetch", defaults: { format: :json }
 end
 
 Discourse::Application.routes.draw do
