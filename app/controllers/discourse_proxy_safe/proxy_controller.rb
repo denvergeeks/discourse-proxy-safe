@@ -24,7 +24,7 @@ module ::DiscourseProxySafe
       application/problem+json
     ].freeze
 
-    BROADER_CONTENT_TYPES = %w[
+    EXTERNAL_CONTENT_TYPES = %w[
       application/json
       application/problem+json
       text/plain
@@ -37,13 +37,26 @@ module ::DiscourseProxySafe
     ].freeze
 
     def fetch
-      cached = read_cache
+      proxy_fetch(allowed_content_types: JSON_CONTENT_TYPES, default_content_type: "application/json")
+    end
+
+    def fetch_external
+      proxy_fetch(
+        allowed_content_types: EXTERNAL_CONTENT_TYPES,
+        default_content_type: "text/plain"
+      )
+    end
+
+    private
+
+    def proxy_fetch(allowed_content_types:, default_content_type:)
+      cached = read_cache(default_content_type)
       if cached
         render plain: cached[:body], content_type: cached[:content_type], status: 200
         return
       end
 
-      response = fetch_remote
+      response = fetch_remote(allowed_content_types)
 
       unless response
         render json: { error: "Remote fetch failed or timed out." }, status: 502
@@ -55,7 +68,7 @@ module ::DiscourseProxySafe
         return
       end
 
-      unless acceptable_content_type?(response)
+      unless acceptable_content_type?(response, allowed_content_types)
         render json: { error: "Remote returned an unsupported content type." }, status: 502
         return
       end
@@ -67,20 +80,18 @@ module ::DiscourseProxySafe
 
       body = response.body.to_s
       status = normalize_status(response.status)
-      content_type = normalized_response_content_type(response)
+      content_type = normalized_response_content_type(response, default_content_type)
 
-      write_cache(body, content_type) if status == 200
+      write_cache(body, content_type, default_content_type) if status == 200
 
       render plain: body, content_type: content_type, status: status
     rescue => e
       Rails.logger.error(
-        "[discourse-proxy-safe] Unhandled error in fetch: #{e.class}: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}"
+        "[discourse-proxy-safe] Unhandled error in #{action_name}: #{e.class}: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}"
       )
 
       render json: { error: "An unexpected error occurred." }, status: 500
     end
-
-    private
 
     def check_plugin_enabled
       return if SiteSetting.proxy_safe_enabled
@@ -221,7 +232,7 @@ module ::DiscourseProxySafe
       nil
     end
 
-    def fetch_remote
+    def fetch_remote(allowed_content_types)
       timeout = SiteSetting.proxy_safe_request_timeout_seconds.to_i
 
       connection =
@@ -233,8 +244,8 @@ module ::DiscourseProxySafe
         end
 
       connection.get(@proxy_uri.to_s) do |req|
-        req.headers["Accept"] = request_accept_header
-        req.headers["User-Agent"] = "discourse-proxy-safe/0.2 (+#{Discourse.base_url})"
+        req.headers["Accept"] = accept_header_for(allowed_content_types)
+        req.headers["User-Agent"] = "discourse-proxy-safe/0.3 (+#{Discourse.base_url})"
       end
     rescue Faraday::ClientError => e
       if e.response
@@ -245,40 +256,29 @@ module ::DiscourseProxySafe
         )
       else
         Rails.logger.warn(
-          "[discourse-proxy-safe] Fetch failed for #{@proxy_uri}: #{e.class}: #{e.message}"
+          "[discourse-proxy-safe] Fetch failed for #{@proxy_uri} in #{action_name}: #{e.class}: #{e.message}"
         )
         nil
       end
     rescue Faraday::TimeoutError, Faraday::ConnectionFailed, Faraday::SSLError => e
       Rails.logger.warn(
-        "[discourse-proxy-safe] Fetch failed for #{@proxy_uri}: #{e.class}: #{e.message}"
+        "[discourse-proxy-safe] Fetch failed for #{@proxy_uri} in #{action_name}: #{e.class}: #{e.message}"
       )
       nil
     rescue => e
       Rails.logger.error(
-        "[discourse-proxy-safe] Unexpected fetch error for #{@proxy_uri}: #{e.class}: #{e.message}"
+        "[discourse-proxy-safe] Unexpected fetch error for #{@proxy_uri} in #{action_name}: #{e.class}: #{e.message}"
       )
       nil
     end
 
-    def request_accept_header
-      if SiteSetting.proxy_safe_only_json
-        JSON_CONTENT_TYPES.join(", ")
-      else
-        (BROADER_CONTENT_TYPES + ["*/*"]).join(", ")
-      end
+    def accept_header_for(allowed_content_types)
+      (allowed_content_types + ["*/*"]).uniq.join(", ")
     end
 
-    def acceptable_content_type?(response)
+    def acceptable_content_type?(response, allowed_content_types)
       content_type = response.headers["content-type"].to_s.downcase
-      allowed_types =
-        if SiteSetting.proxy_safe_only_json
-          JSON_CONTENT_TYPES
-        else
-          BROADER_CONTENT_TYPES
-        end
-
-      allowed_types.any? { |allowed| content_type.include?(allowed) }
+      allowed_content_types.any? { |allowed| content_type.include?(allowed) }
     end
 
     def acceptable_size?(response)
@@ -287,11 +287,11 @@ module ::DiscourseProxySafe
     end
 
     def cache_key
-      digest = Digest::SHA256.hexdigest(@proxy_uri.to_s)
+      digest = Digest::SHA256.hexdigest("#{action_name}:#{@proxy_uri}")
       "#{CACHE_KEY_PREFIX}:response:#{digest}"
     end
 
-    def read_cache
+    def read_cache(default_content_type)
       ttl = SiteSetting.proxy_safe_cache_seconds.to_i
       return nil if ttl <= 0
 
@@ -307,7 +307,7 @@ module ::DiscourseProxySafe
       nil
     end
 
-    def write_cache(body, content_type)
+    def write_cache(body, content_type, default_content_type)
       ttl = SiteSetting.proxy_safe_cache_seconds.to_i
       return if ttl <= 0
 
@@ -319,12 +319,8 @@ module ::DiscourseProxySafe
       Discourse.redis.setex(cache_key, ttl, payload.to_json)
     end
 
-    def normalized_response_content_type(response)
+    def normalized_response_content_type(response, default_content_type)
       response.headers["content-type"].presence || default_content_type
-    end
-
-    def default_content_type
-      SiteSetting.proxy_safe_only_json ? "application/json" : "text/plain"
     end
 
     def normalize_status(status)
