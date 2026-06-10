@@ -157,6 +157,8 @@ Keep the shared Discourse plugin workflow for full plugin CI.
 
 Because the shared reusable workflow does not currently expose an input for narrowing the rspec target, any faster proxy-only CI should be implemented as a separate supplemental workflow rather than by replacing or overloading the shared workflow.
 
+A supplemental focused workflow may run only the proxy request specs inside a temporary Discourse checkout with explicit PostgreSQL and Redis services for faster feedback on proxy-specific changes.
+
 ### Maintenance note
 
 If the proxy route names, provider endpoints, controller behavior, or content-type rules change, re-run these focused request specs immediately.
